@@ -16,8 +16,8 @@ linking · `0x40` connected.
 # one-off, no install:
 uv run h800pair.py
 
-# or from a GitHub clone:
-uvx --from git+https://github.com/YOURUSER/h800pair h800pair
+# or from this repo, no clone needed:
+uvx --from git+https://github.com/thesebas/logitech-pair.git h800pair
 ```
 
 Plug in the receiver, run the script, and follow the printed steps:
