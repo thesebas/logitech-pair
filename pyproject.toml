@@ -1,0 +1,16 @@
+[project]
+name = "h800pair"
+version = "0.1.0"
+description = "Pair Logitech wireless headsets (H800, H600, UE3500) with their USB Nano receiver"
+requires-python = ">=3.9"
+dependencies = ["hidapi>=0.15.0"]
+
+[project.scripts]
+h800pair = "h800pair:main"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["h800pair"]
