@@ -1,0 +1,12 @@
+[package]
+name = "h800pair"
+version = "0.1.0"
+edition = "2021"
+description = "Pair Logitech wireless headsets (H800, H600, UE3500) with their USB Nano receiver"
+license = "MIT"
+
+[dependencies]
+hidapi = "2"
+
+[profile.release]
+strip = true

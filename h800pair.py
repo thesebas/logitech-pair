@@ -103,13 +103,16 @@ While the window is open:
   4. Keep the headset near the receiver until the light goes solid.""", flush=True)
 
         t0 = time.time()
+        armed = False
         while time.time() - t0 < args.seconds:
             poll()
-            if state == 0x40:
+            if state in (0x04, 0x10):
+                armed = True
+            if state == 0x40 and armed:
                 log(f'SUCCESS: headset paired and connected '
                     f'({time.time() - t0:.0f}s). You can close this window.')
                 return 0
-            time.sleep(3 if state != 0x10 else 1)
+            time.sleep(3 if state == 0x10 else 1)
 
         log(f'ERROR: no headset paired within {args.seconds}s. '
             'Make sure the headset has battery charge and that you follow '
