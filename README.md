@@ -16,9 +16,14 @@ linking · `0x40` connected.
 # one-off, no install:
 uv run h800pair.py
 
+# Rust binary (also installable: cargo install --path .):
+cargo run --release
+
 # or from this repo, no clone needed:
 uvx --from git+https://github.com/thesebas/logitech-pair.git h800pair
 ```
+
+On Linux the Rust build needs `libudev` (`pkg install|apt install libudev-dev`).
 
 Plug in the receiver, run the script, and follow the printed steps:
 turn the headset on, set its device-selection switch to the free slot
