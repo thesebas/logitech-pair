@@ -6,8 +6,8 @@
 //! 0xFFA0) takes 3-byte output reports [0x02, CMD, 0x00] and answers with
 //! [0x02, CMD, STATUS]. See the repo wiki for details.
 
-use std::io::Write;
 use std::process::ExitCode;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use hidapi::HidApi;
@@ -16,9 +16,7 @@ const VENDOR: u16 = 0x046D;
 const PRODUCTS: [u16; 2] = [0x0A29, 0x0A2D];
 const USAGE_PAGE: u16 = 0xFFA0;
 
-const OPEN_WINDOW: u8 = 0x08;
-const POLL: u8 = 0x80;
-const RESET: u8 = 0x01;
+static START: OnceLock<Instant> = OnceLock::new();
 
 fn status_label(s: u8) -> Option<&'static str> {
     match s {
@@ -40,69 +38,10 @@ fn arms(status: u8) -> bool {
     status == 0x04 || status == 0x10
 }
 
-struct Receiver {
-    dev: hidapi::HidDevice,
-    debug: bool,
-}
-
-impl Receiver {
-    fn open(api: &HidApi, debug: bool) -> Result<Receiver, String> {
-        let target = api
-            .device_list()
-            .find(|d| {
-                d.vendor_id() == VENDOR
-                    && PRODUCTS.contains(&d.product_id())
-                    && d.usage_page() == USAGE_PAGE
-            })
-            .ok_or_else(|| {
-                "ERROR: Logitech headset receiver not found. Plug in the USB \
-                 Nano receiver and try again."
-                    .to_string()
-            })?;
-        let dev = api.open_path(target.path()).map_err(|e| e.to_string())?;
-        Ok(Receiver { dev, debug })
-    }
-
-    /// Send a 3-byte command and read the reply. Returns raw reply bytes.
-    fn send(&self, cmd: u8) -> Result<Option<[u8; 64]>, String> {
-        let report = [0x02, cmd, 0x00];
-        let n = self.dev.write(&report).map_err(|e| e.to_string())?;
-        if self.debug {
-            println!("  [debug] -> {} ({n} bytes)", hex(&report));
-        }
-        let mut buf = [0u8; 64];
-        let n = self
-            .dev
-            .read_timeout(&mut buf, 1000)
-            .map_err(|e| e.to_string())?;
-        if self.debug && n > 0 {
-            println!("  [debug] <- {}", hex(&buf[..n]));
-        }
-        Ok(if n > 0 { Some(buf) } else { None })
-    }
-
-    /// Poll pairing status, report state transitions. Returns current status.
-    fn poll(&mut self, state: &mut Option<u8>) -> Result<Option<u8>, String> {
-        if let Some(reply) = self.send(POLL)? {
-            if reply[0] == 0x02 {
-                let new = reply[2];
-                if Some(new) != *state {
-                    if let Some(label) = status_label(new) {
-                        println!("\n{:>8}  Dongle: {label}", stamp());
-                    }
-                    *state = Some(new);
-                }
-            }
-        }
-        Ok(*state)
-    }
-}
-
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x} ")).collect()
 }
 
-/// Seconds elapsed since start, as "[  12s]" for log lines.
 fn stamp() -> String {
     format!(
         "[{:>4}s]",
@@ -113,9 +52,6 @@ fn stamp() -> String {
             .as_secs()
     )
 }
-
-use std::sync::OnceLock;
-static START: OnceLock<Instant> = OnceLock::new();
 
 fn main() -> ExitCode {
     START.set(Instant::now()).ok().unwrap();
@@ -148,25 +84,59 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut rx = match Receiver::open(&api, debug) {
-        Ok(rx) => rx,
+    let target = match api.device_list().find(|d| {
+        d.vendor_id() == VENDOR
+            && PRODUCTS.contains(&d.product_id())
+            && d.usage_page() == USAGE_PAGE
+    }) {
+        Some(t) => t,
+        None => {
+            println!("ERROR: Logitech headset receiver not found. Plug in the USB Nano receiver and try again.");
+            return ExitCode::FAILURE;
+        }
+    };
+    let dev = match api.open_path(target.path()) {
+        Ok(d) => d,
         Err(e) => {
-            println!("{e}");
+            println!("ERROR: cannot open the receiver: {e}");
             return ExitCode::FAILURE;
         }
     };
     println!("Found Logitech headset receiver.");
 
-    let mut state: Option<u8> = None;
-    if let Err(e) = rx.poll(&mut state) {
-        println!("ERROR: cannot talk to the receiver: {e}");
+    // Current pairing status (0 = unknown yet).
+    let mut state: u8 = 0;
+
+    // Initial status poll.
+    let report = [0x02, 0x80, 0x00];
+    let n = dev.write(&report).map_err(|e| e.to_string()).unwrap_or(0);
+    let mut buf = [0u8; 64];
+    if let Ok(n) = dev.read_timeout(&mut buf, 1000) {
+        if debug && n > 0 {
+            println!("  [debug] <- {}", hex(&buf[..n]));
+        }
+        if n >= 3 && buf[0] == 0x02 {
+            state = buf[2];
+            if let Some(label) = status_label(state) {
+                println!("\n{:>8}  Dongle: {label}", stamp());
+            }
+        }
+    }
+    if n == 0 {
+        println!("ERROR: cannot talk to the receiver.");
         return ExitCode::FAILURE;
     }
 
-    if let Err(e) = rx.send(OPEN_WINDOW) {
+    // Open the pairing window.
+    let report = [0x02, 0x08, 0x00];
+    if let Err(e) = dev.write(&report) {
         println!("ERROR: cannot open the pairing window: {e}");
         return ExitCode::FAILURE;
     }
+    if debug {
+        println!("  [debug] -> {}", hex(&report));
+    }
+
     println!("\nPairing window is OPEN.");
     println!(
         "While the window is open:\n  \
@@ -180,48 +150,67 @@ fn main() -> ExitCode {
                 UE3500: press and hold the POWER BUTTON for 9 seconds\n  \
            4. Keep the headset near the receiver until the light goes solid."
     );
-    let _ = std::io::stdout().flush();
 
     let started = Instant::now();
     let mut armed = false;
-    while started.elapsed().as_secs() < seconds {
-        match rx.poll(&mut state) {
-            Ok(Some(s)) => {
-                armed = armed || arms(s);
-                if pairing_done(armed, s) {
-                    println!(
-                        "\nSUCCESS: headset paired and connected ({}s).",
-                        started.elapsed().as_secs()
-                    );
-                    return ExitCode::SUCCESS;
+    let code = loop {
+        let report = [0x02, 0x80, 0x00];
+        if let Err(e) = dev.write(&report) {
+            println!("ERROR: lost contact with the receiver: {e}");
+            break ExitCode::FAILURE;
+        }
+        if debug {
+            println!("  [debug] -> {}", hex(&report));
+        }
+        let mut buf = [0u8; 64];
+        match dev.read_timeout(&mut buf, 1000) {
+            Ok(n) if n >= 3 && buf[0] == 0x02 => {
+                if debug && n > 0 {
+                    println!("  [debug] <- {}", hex(&buf[..n]));
+                }
+                if buf[2] != state {
+                    state = buf[2];
+                    if let Some(label) = status_label(state) {
+                        println!("\n{:>8}  Dongle: {label}", stamp());
+                    }
                 }
             }
             Ok(_) => {}
             Err(e) => {
                 println!("ERROR: lost contact with the receiver: {e}");
-                return ExitCode::FAILURE;
+                break ExitCode::FAILURE;
             }
         }
-        let nap = if state == Some(0x10) { 1 } else { 3 };
-        std::thread::sleep(Duration::from_secs(nap));
-    }
 
-    println!(
-        "\nERROR: no headset paired within {seconds}s. Make sure the headset \
-         has battery charge and that you follow the pairing ritual above for \
-         your model, then retry."
-    );
-    ExitCode::FAILURE
-}
-
-impl Drop for Receiver {
-    fn drop(&mut self) {
-        // Close the pairing window, best effort.
-        let _ = self.dev.write(&[0x02, RESET, 0x00]);
-        if self.debug {
-            println!("  [debug] -> 02 01 00 (window closed)");
+        armed = armed || arms(state);
+        if pairing_done(armed, state) {
+            println!(
+                "\nSUCCESS: headset paired and connected ({}s).",
+                started.elapsed().as_secs()
+            );
+            break ExitCode::SUCCESS;
         }
+        std::thread::sleep(Duration::from_secs(if state == 0x10 { 1 } else { 3 }));
+        if started.elapsed().as_secs() >= seconds {
+            break ExitCode::FAILURE;
+        }
+    };
+
+    // Close the pairing window, best effort.
+    let report = [0x02, 0x01, 0x00];
+    let _ = dev.write(&report);
+    if debug {
+        println!("  [debug] -> {} (window closed)", hex(&report));
     }
+
+    if code == ExitCode::FAILURE && started.elapsed().as_secs() >= seconds {
+        println!(
+            "\nERROR: no headset paired within {seconds}s. Make sure the headset \
+             has battery charge and that you follow the pairing ritual above \
+             for your model, then retry."
+        );
+    }
+    code
 }
 
 #[cfg(test)]
